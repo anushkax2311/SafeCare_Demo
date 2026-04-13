@@ -6,7 +6,7 @@ st.set_page_config(page_title="SafeCare", page_icon="🏥", layout="wide")
 st.markdown("# 🏥 SafeCare\n### Cancer Detection + Abuse Identification for Rural Women")
 
 genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-model = genai.GenerativeModel("gemini-1.5-flash")
+model = genai.GenerativeModel("gemini-2.0-flash")
 
 SYSTEM_PROMPT = """You are SafeCare, an AI health assistant for rural women in India.
 You identify early cancer symptoms AND detect signs of abuse/control that prevent women from seeking care.
