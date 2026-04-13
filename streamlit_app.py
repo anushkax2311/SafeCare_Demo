@@ -1,66 +1,23 @@
 import streamlit as st
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
-from peft import PeftModel
+import google.generativeai as genai
 import json
 
-st.set_page_config(
-    page_title="SafeCare: Women's Health + Safety",
-    page_icon="🏥",
-    layout="wide"
-)
+st.set_page_config(page_title="SafeCare", page_icon="🏥", layout="wide")
+st.markdown("# 🏥 SafeCare\n### Cancer Detection + Abuse Identification for Rural Women")
 
-st.markdown("""
-# 🏥 SafeCare
-### Recognizing Cancer + Preventing Abuse
-**Fine-tuned Gemma 4 E4B — Live Demo**
-""")
+genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+model = genai.GenerativeModel("gemini-1.5-flash")
 
-# Load model (matching your Kaggle training exactly)
-@st.cache_resource
-def load_model():
-    st.info("⏳ Loading fine-tuned Gemma 4 (first load: 2-3 min)...")
-    
-    try:
-        # 4-bit quantization (matching your training)
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_use_double_quant=True,
-            bnb_4bit_quant_type="nf8",
-        )
-        
-        # Load base model from HuggingFace
-        base_model_name = "google/gemma-4-E4B-it"
-        
-        st.write("📥 Downloading tokenizer...")
-        tokenizer = AutoTokenizer.from_pretrained(base_model_name)
-        
-        st.write("📥 Downloading base model...")
-        model = AutoModelForCausalLM.from_pretrained(
-            base_model_name,
-            quantization_config=bnb_config,
-            device_map="auto",
-            trust_remote_code=True
-        )
-        
-        st.write("📥 Loading your fine-tuned LoRA adapter...")
-        # Load your fine-tuned LoRA weights
-        model = PeftModel.from_pretrained(model, "./final-model")
-        
-        st.success("✅ Model loaded successfully!")
-        return model, tokenizer
-        
-    except Exception as e:
-        st.error(f"❌ Error: {str(e)}")
-        st.error("Make sure final-model/ folder is in your GitHub repo")
-        return None, None
-
-# Load model
-model, tokenizer = load_model()
-
-if model is None:
-    st.stop()
+SYSTEM_PROMPT = """You are SafeCare, an AI health assistant for rural women in India.
+You identify early cancer symptoms AND detect signs of abuse/control that prevent women from seeking care.
+Always respond in valid JSON only, no extra text:
+{
+  "severity": "high/medium/low",
+  "symptom_analysis": "simple explanation",
+  "abuse_risk_flags": ["list or empty"],
+  "action_steps": ["step1", "step2", "step3"],
+  "safe_resources": ["Mahila Helpline: 181", "NCW: 7827170170"]
+}"""
 
 tab1, tab2, tab3 = st.tabs([
     "👩 Woman's Symptom Checker",
@@ -68,176 +25,125 @@ tab1, tab2, tab3 = st.tabs([
     "ℹ️ About SafeCare"
 ])
 
-# TAB 1: Woman's Interface
 with tab1:
-    st.markdown("""
-    ## 👩 मेरी समस्या को समझें
-    **अपने लक्षणों को हिंदी में बताएं**
-    """)
-    
+    st.markdown("## अपने लक्षणों को बताएं")
     symptom = st.text_area(
         "आप कैसा महसूस कर रही हैं?",
-        placeholder="उदाहरण: मुझे 3 महीने से bleeding हो रही है, पेट में दर्द है...",
-        height=120,
-        key="woman_symptom"
+        placeholder="Mujhe 3 mahine se bleeding ho rahi hai, pet mein dard hai...",
+        height=120
     )
-    
-    if st.button("📋 मेरे लक्षणों का विश्लेषण करें", key="woman_btn"):
-        if symptom.strip() and model:
-            with st.spinner("🔄 विश्लेषण किया जा रहा है... (30-60 सेकंड)"):
-                try:
-                    # Create prompt in SAME format as training
-                    prompt = f"""<start_of_turn>user
-You are SafeCare, a health assistant for rural women in India. Analyze symptoms and respond ONLY with JSON.
+    col1, col2 = st.columns(2)
+    with col1:
+        region = st.selectbox("Region", ["Bihar","Jharkhand","UP","West Bengal","Rajasthan","Haryana"])
+    with col2:
+        barrier = st.selectbox("Barrier?", ["None","Husband won't allow","No money","Far from doctor","Social stigma"])
+
+    if st.button("📋 विश्लेषण करें", type="primary"):
+        if symptom.strip():
+            with st.spinner("Analyzing..."):
+                prompt = f"""{SYSTEM_PROMPT}
 
 महिला ने कहा: "{symptom}"
-Region: rural India<end_of_turn>
-<start_of_turn>model
-"""
-                    
-                    # Tokenize (matching your training format)
-                    inputs = tokenizer(
-                        prompt,
-                        return_tensors="pt",
-                        max_length=512,
-                        truncation=True,
-                        padding=True
-                    ).to("cuda" if torch.cuda.is_available() else "cpu")
-                    
-                    # Generate
-                    with torch.no_grad():
-                        outputs = model.generate(
-                            **inputs,
-                            max_length=800,
-                            temperature=0.7,
-                            do_sample=True,
-                            top_p=0.9,
-                            pad_token_id=tokenizer.eos_token_id
-                        )
-                    
-                    # Decode
-                    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-                    
-                    # Extract just the model response part
-                    if "<start_of_turn>model" in response:
-                        response = response.split("<start_of_turn>model")[-1].strip()
-                    
-                    st.success("✅ Analysis Complete")
-                    st.markdown(response)
-                    
-                    st.markdown("""
-                    ### 📞 मदद के लिए संपर्क करें
-                    - **महिला हेल्पलाइन: 181** (24/7, गोपनीय)
-                    - **पुलिस: 112** (तुरंत खतरे में)
-                    - **स्थानीय ANM/ASHA**
-                    """)
-                    
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
-        else:
-            st.warning("कृपया अपने लक्षणों को विस्तार से बताएं")
+Region: {region}
+Barrier: {barrier}"""
 
-# TAB 2: Health Worker Interface
-with tab2:
-    st.markdown("""
-    ## 💼 स्वास्थ्य कार्यकर्ता के लिए
-    **एक महिला को पहचानें, सुरक्षित रूप से संपर्क करें**
-    """)
-    
-    observation = st.text_area(
-        "अपनी टिप्पणी दर्ज करें",
-        placeholder="महिला के बारे में आपने क्या देखा?",
-        height=120,
-        key="hw_observation"
-    )
-    
-    if st.button("🔍 जोखिम का मूल्यांकन करें", key="hw_btn"):
-        if observation.strip() and model:
-            with st.spinner("🔄 मूल्यांकन किया जा रहा है... (30-60 सेकंड)"):
+                response = model.generate_content(prompt)
+                raw = response.text.strip()
+                if raw.startswith("```"):
+                    raw = raw.split("```")[1]
+                    if raw.startswith("json"):
+                        raw = raw[4:]
+
                 try:
-                    # Create prompt in SAME format as training
-                    prompt = f"""<start_of_turn>user
-You are SafeCare, a health assistant for rural women in India. Assess abuse risk and health concerns. Respond ONLY with JSON.
+                    data = json.loads(raw)
+                    sev = data.get("severity","medium")
+                    color = {"high":"🔴","medium":"🟡","low":"🟢"}.get(sev,"🟡")
 
-स्वास्थ्य कार्यकर्ता की टिप्पणी: {observation}<end_of_turn>
-<start_of_turn>model
-"""
-                    
-                    # Tokenize (matching your training format)
-                    inputs = tokenizer(
-                        prompt,
-                        return_tensors="pt",
-                        max_length=512,
-                        truncation=True,
-                        padding=True
-                    ).to("cuda" if torch.cuda.is_available() else "cpu")
-                    
-                    # Generate
-                    with torch.no_grad():
-                        outputs = model.generate(
-                            **inputs,
-                            max_length=800,
-                            temperature=0.7,
-                            do_sample=True,
-                            top_p=0.9,
-                            pad_token_id=tokenizer.eos_token_id
-                        )
-                    
-                    # Decode
-                    response = tokenizer.decode(outputs[0], skip_special_tokens=True)
-                    
-                    # Extract just the model response part
-                    if "<start_of_turn>model" in response:
-                        response = response.split("<start_of_turn>model")[-1].strip()
-                    
-                    st.success("✅ Assessment Complete")
-                    st.markdown(response)
-                    
-                    st.markdown("""
-                    ### 📞 Resources to Share
-                    - **महिला हेल्पलाइन: 181** (24/7, गोपनीय)
-                    - **NCW: 7827170170**
-                    - **Nearest Government Hospital**
-                    """)
-                    
-                except Exception as e:
-                    st.error(f"Error: {str(e)}")
+                    st.markdown(f"### {color} Severity: {sev.upper()}")
+                    st.info(f"**Analysis:** {data.get('symptom_analysis','')}")
+
+                    if data.get("abuse_risk_flags"):
+                        st.warning(f"⚠️ Safety concern: {', '.join(data['abuse_risk_flags'])}")
+
+                    st.markdown("### Action Steps")
+                    for i, step in enumerate(data.get("action_steps",[]), 1):
+                        st.markdown(f"**{i}.** {step}")
+
+                    st.markdown("### 📞 Help")
+                    for r in data.get("safe_resources",[]):
+                        st.markdown(f"- {r}")
+
+                except json.JSONDecodeError:
+                    st.markdown(raw)
         else:
-            st.warning("Please provide observations")
+            st.warning("Please describe your symptoms.")
 
-# TAB 3: About
+with tab2:
+    st.markdown("## Health Worker Dashboard")
+    observation = st.text_area(
+        "Patient observations",
+        placeholder="Woman missed 3 appointments. Husband always present. Visible bruises.",
+        height=120
+    )
+
+    if st.button("🔍 Assess Risk", type="primary"):
+        if observation.strip():
+            with st.spinner("Assessing..."):
+                prompt = f"""{SYSTEM_PROMPT}
+
+Health worker observation: {observation}
+Assess both health AND abuse risk."""
+
+                response = model.generate_content(prompt)
+                raw = response.text.strip()
+                if raw.startswith("```"):
+                    raw = raw.split("```")[1]
+                    if raw.startswith("json"):
+                        raw = raw[4:]
+
+                try:
+                    data = json.loads(raw)
+                    sev = data.get("severity","medium")
+                    color = {"high":"🔴","medium":"🟡","low":"🟢"}.get(sev,"🟡")
+
+                    st.markdown(f"### {color} Risk Level: {sev.upper()}")
+                    st.info(data.get("symptom_analysis",""))
+
+                    if data.get("abuse_risk_flags"):
+                        st.error(f"🚨 Flags: {', '.join(data['abuse_risk_flags'])}")
+
+                    st.markdown("### Recommended Actions")
+                    for i, step in enumerate(data.get("action_steps",[]), 1):
+                        st.markdown(f"**{i}.** {step}")
+
+                    st.markdown("### Resources")
+                    for r in data.get("safe_resources",[]):
+                        st.markdown(f"- {r}")
+
+                except json.JSONDecodeError:
+                    st.markdown(raw)
+
 with tab3:
     st.markdown("""
-    ## SafeCare: कैंसर + दुर्व्यवहार को रोकना
-    
-    ### समस्या
-    - 95% अस्पतालों में मरने वाली महिलाएं गरीब और ग्रामीण होती हैं
-    - शुरुआती लक्षण नहीं पहचाने जाते
-    - दुर्व्यवहार में महिलाएं मदद नहीं ले सकतीं
-    
-    ### समाधान
-    **SafeCare = Gemma 4 E4B fine-tuned on 95 real examples**
-    - ✓ कैंसर के शुरुआती लक्षण पहचानता है
-    - ✓ दुर्व्यवहार के संकेत चिन्हित करता है
-    - ✓ सुरक्षित कदम बताता है
-    - ✓ पूरी तरह गोपनीय (आपके फोन में)
-    
-    ### तकनीकी विवरण
-    - **मॉडल:** Gemma 4 E4B (4B parameters)
-    - **प्रशिक्षण:** Unsloth + LoRA (r=16, lora_alpha=32)
-    - **डेटा:** 95 real SafeCare examples
-    - **भाषा:** Hindi
-    
-    ### वास्तविक प्रभाव
-    > "मेरी माँ को स्टेज 3 कैंसर था। उसे उसके पति द्वारा बलात्कार भी किया गया। 
-    > अगर जल्दी पकड़ा होता... वह जीवित होती।"
-    > — कैंसर पीड़ित की बेटी
-    
-    ---
-    Built with Gemma 4 | Open Source | For NGOs & Health Ministries
-    """)
+    ## About SafeCare
 
-st.markdown("""
----
-⏳ **Note:** First load takes 2-3 minutes (model download). Subsequent requests are faster.
-""")
+    A woman died of stage 3 cancer while being subjected to marital rape. Her daughter witnessed it.
+    SafeCare was built so this doesn't happen again.
+
+    ### What it does
+    - Recognizes early cancer symptoms in women's own words (Hindi)
+    - Identifies when abuse is preventing care-seeking
+    - Gives safe, culturally appropriate action steps
+    - Works for 6 regions: Bihar, Jharkhand, UP, West Bengal, Rajasthan, Haryana
+
+    ### Technical
+    - Fine-tuned: Gemma 4 E4B via Unsloth + LoRA on 95 real examples
+    - Base model: google/gemma-4-E4B-it
+    - Training: 3 epochs, r=16, lora_alpha=32
+    - Data: Cancer symptoms + abuse indicators from real NGO reports
+
+    ### Help Resources
+    - **Mahila Helpline: 181** (free, 24/7)
+    - **NCW Helpline: 7827170170**
+    - **Police: 112**
+    """)
